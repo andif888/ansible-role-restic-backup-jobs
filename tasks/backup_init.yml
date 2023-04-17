@@ -1,0 +1,135 @@
+---
+- name: Ensure restic_backup_jobs_install_path exists
+  ansible.builtin.file:
+    path: '{{ restic_backup_jobs_install_path }}'
+    state: directory
+
+- name: Backup_init - Ensure S3 bucket exists
+  ansible.builtin.shell: |
+    mc alias set localminio {{ restic_backup_jobs_s3_endpoint }} {{ restic_backup_jobs_s3_repo_access_key }} {{ restic_backup_jobs_s3_repo_secret_key }}
+    mc mb --ignore-existing localminio/{{ restic_backup_jobs_s3_bucket_name }}     
+  register: mc_mb_result
+
+- name: Backup_init {{ restic_backup_jobs_s3_repo }}
+  ansible.builtin.debug:
+    msg: "{{ mc_mb_result.stdout }}"
+
+- name: Backup_init {{ restic_backup_jobs_s3_repo }} - Check repo exists
+  ansible.builtin.shell: |
+    export RESTIC_REPOSITORY="{{ restic_backup_jobs_s3_repo }}"
+    export AWS_ACCESS_KEY_ID="{{ restic_backup_jobs_s3_repo_access_key }}"
+    export AWS_SECRET_ACCESS_KEY="{{ restic_backup_jobs_s3_repo_secret_key }}"
+    export RESTIC_PASSWORD="{{ restic_backup_jobs_s3_repo_password }}"
+    restic snapshots        
+  register: restic_snapshots
+  ignore_errors: true
+  changed_when: false
+
+- name: Backup_init {{ restic_backup_jobs_s3_repo }} - Init repo with seeding repo
+  ansible.builtin.shell: |
+    export RESTIC_REPOSITORY="{{ restic_backup_jobs_s3_repo }}"
+    export AWS_ACCESS_KEY_ID="{{ restic_backup_jobs_s3_repo_access_key }}"
+    export AWS_SECRET_ACCESS_KEY="{{ restic_backup_jobs_s3_repo_secret_key }}"
+    export RESTIC_PASSWORD="{{ restic_backup_jobs_s3_repo_password }}"
+    export RESTIC_FROM_PASSWORD="{{ restic_backup_jobs_s3_seed_repo_password }}"
+    export RESTIC_FROM_REPOSITORY="{{ restic_backup_jobs_s3_seed_repo }}"
+    restic init --copy-chunker-params        
+  register: restic_init
+  when: 
+    - restic_snapshots.rc != 0
+    - restic_backup_jobs_s3_seed_repo is defined
+    - restic_backup_jobs_s3_seed_repo_password is defined
+
+- name: Backup_init {{ restic_backup_jobs_s3_repo }} - Seed repo with seeding repo
+  ansible.builtin.shell: |
+    export RESTIC_REPOSITORY="{{ restic_backup_jobs_s3_repo }}"
+    export AWS_ACCESS_KEY_ID="{{ restic_backup_jobs_s3_repo_access_key }}"
+    export AWS_SECRET_ACCESS_KEY="{{ restic_backup_jobs_s3_repo_secret_key }}"
+    export RESTIC_PASSWORD="{{ restic_backup_jobs_s3_repo_password }}"
+    export RESTIC_FROM_PASSWORD="{{ restic_backup_jobs_s3_seed_repo_password }}"
+    export RESTIC_FROM_REPOSITORY="{{ restic_backup_jobs_s3_seed_repo }}"
+    restic copy       
+  register: restic_seeded
+  when: 
+    - restic_init is defined
+    - restic_backup_jobs_s3_seed_repo is defined
+    - restic_backup_jobs_s3_seed_repo_password is defined
+
+- name: Backup_init {{ restic_backup_jobs_s3_repo }} - Init empty repo
+  ansible.builtin.shell: |
+    export RESTIC_REPOSITORY="{{ restic_backup_jobs_s3_repo }}"
+    export AWS_ACCESS_KEY_ID="{{ restic_backup_jobs_s3_repo_access_key }}"
+    export AWS_SECRET_ACCESS_KEY="{{ restic_backup_jobs_s3_repo_secret_key }}"
+    export RESTIC_PASSWORD="{{ restic_backup_jobs_s3_repo_password }}"
+    restic init        
+  register: restic_init_empty
+  when: 
+    - restic_snapshots.rc != 0
+    - (not restic_init is defined) or (restic_init.skipped)
+
+- name: Backup_init {{ restic_backup_jobs_s3_repo }} - restic_init
+  ansible.builtin.debug:
+    var: restic_init
+  when: restic_init is defined
+
+- name: Backup_init {{ restic_backup_jobs_s3_repo }} - restic_seeded
+  ansible.builtin.debug:
+    var: restic_seeded
+  when: restic_seeded is defined
+
+- name: Backup_init {{ restic_backup_jobs_s3_repo }} - restic_init_empty
+  ansible.builtin.debug:
+    var: restic_init_empty
+  when: restic_init_empty is defined
+
+- name: Backup_init {{ restic_backup_jobs_s3_repo }} - Seed time
+  ansible.builtin.debug:
+    msg: "Start {{ restic_seeded.start }} End {{ restic_seeded.end }} Delta {{ restic_seeded.delta }}"
+  when: 
+    - restic_seeded is defined
+    - restic_seeded.changed is defined
+    - restic_seeded.changed
+    - restic_seeded.delta is defined
+
+- name: Create List Snapshots Scripts
+  ansible.builtin.template:
+    src: "templates/snapshots.sh.j2"
+    dest: "{{ restic_backup_jobs_install_path }}/restic_listsnapshot_job_{{ item.name }}.sh"
+    owner: "root"
+    group: "root"
+    mode: '700'
+  loop: "{{ restic_backup_jobs }}"
+
+- name: Create Backup Scripts
+  ansible.builtin.template:
+    src: "templates/backupscript.sh.j2"
+    dest: "{{ restic_backup_jobs_install_path }}/restic_backup_job_{{ item.name }}.sh"
+    owner: "root"
+    group: "root"
+    mode: '700'
+  loop: "{{ restic_backup_jobs }}"
+
+- name: Create Restore Scripts
+  ansible.builtin.template:
+    src: "templates/restorescript.sh.j2"
+    dest: "{{ restic_backup_jobs_install_path }}/restic_restore_job_{{ item.name }}.sh"
+    owner: "root"
+    group: "root"
+    mode: '700'
+  loop: "{{ restic_backup_jobs }}"
+
+- name: Create Cron Jobs
+  ansible.builtin.cron:
+    job: "{{ restic_backup_jobs_install_path }}/restic_backup_job_{{ item.name }}.sh"
+    name: restic_backup_job_{{ item.name }}'
+    month: '{{ item.month }}'
+    weekday: '{{ item.weekday }}'
+    day: '{{ item.day }}'        
+    hour: '{{ item.hour }}'
+    minute: '{{ item.minute }}'
+    user: '{{ item.user }}'        
+    state: '{{ item.state }}'
+    disabled: '{{ item.disabled }}'
+  loop: '{{ restic_backup_jobs }}'
+...
+
