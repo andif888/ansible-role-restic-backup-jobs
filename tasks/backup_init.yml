@@ -121,7 +121,7 @@
 - name: Create Cron Jobs
   ansible.builtin.cron:
     job: "{{ restic_backup_jobs_install_path }}/restic_backup_job_{{ item.name }}.sh"
-    name: restic_backup_job_{{ item.name }}'
+    name: 'restic_backup_job_{{ item.name }}'
     month: '{{ item.month }}'
     weekday: '{{ item.weekday }}'
     day: '{{ item.day }}'        
